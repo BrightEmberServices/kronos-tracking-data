@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kronos SGX Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  :root { --bg:#fff; --fg:#1e293b; --mut:#64748b; --line:#e2e8f0; --blue:#2563eb;
+          --red:#dc2626; --green:#059669; --amber:#d97706; --card:#f8fafc; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f172a; --fg:#e2e8f0; --mut:#94a3b8; --line:#334155; --card:#1e293b; }
+  }
+  body { font:14px -apple-system,system-ui,sans-serif; background:var(--bg); color:var(--fg);
+         max-width:1100px; margin:0 auto; padding:16px; }
+  h1 { font-size:19px; margin:4px 0 2px; }
+  .sub { color:var(--mut); font-size:12px; margin-bottom:12px; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:10px; font-size:12px;
+          background:var(--card); border:1px solid var(--line); }
+  .pill.stale { background:var(--red); color:#fff; border-color:var(--red); }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; margin:12px 0; }
+  .tab { padding:6px 14px; border:1px solid var(--line); border-radius:8px; cursor:pointer;
+         background:var(--card); font-size:13px; }
+  .tab.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+  .card { border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:14px;
+          background:var(--bg); }
+  .card h2 { font-size:14px; margin:0 0 6px; }
+  #main { height:400px; } #cov { height:220px; }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  td,th { border:1px solid var(--line); padding:5px 8px; text-align:left; }
+  .miss { color:var(--red); font-weight:600; } .hit { color:var(--green); }
+  .flag { display:inline-block; padding:1px 7px; border-radius:8px; font-size:11px;
+          background:var(--red); color:#fff; margin-right:4px; }
+  .note { color:var(--mut); font-size:12px; margin-top:6px; }
+  #err { color:var(--red); display:none; }
+</style>
+</head>
+<body>
+<h1>Kronos SGX Tracker <span id="stale" class="pill">loading…</span></h1>
+<div class="sub">Mini-tier forecasts with conformal-calibrated 80% bands · calibrated range, not direction —
+the underlying study found no directional edge. <span id="asof"></span></div>
+<p id="err"></p>
+<div class="tabs" id="tabs"></div>
+<div class="card"><h2 id="chartTitle">—</h2><div id="main"></div>
+  <div class="note">Solid: last 130 daily bars. Shaded: 48-step forecast — inner = raw ensemble 10–90%,
+  outer = CQR-calibrated 80% band. Dashed: ensemble median.</div></div>
+<div class="card"><h2>Rolling band coverage (target 0.80)</h2><div id="cov"></div>
+  <div class="note">Share of scored next-bar forecasts landing inside the calibrated 80% band,
+  trailing 20 scored days, pooled across tickers.</div></div>
+<div class="card"><h2>Latest scores</h2><div id="tbl"></div></div>
+<div class="card"><h2>Recent flags</h2><div id="flags"><span class="note">none yet</span></div></div>
+
+<script>
+const BASE = "https://raw.githubusercontent.com/BrightEmberServices/kronos-tracking-data/main/";
+const bust = "?v=" + new Date().toISOString().slice(0,13);
+const TICKERS = ["ES3.SI","G3B.SI","GAB.SI","D05.SI","O39.SI","U11.SI"];
+const NAMES = {"ES3.SI":"SPDR STI ETF","G3B.SI":"Amova STI ETF (Dist)","GAB.SI":"Amova STI ETF (Acc)",
+               "D05.SI":"DBS Group","O39.SI":"OCBC","U11.SI":"UOB"};
+let recs=[], prices={}, calOff={}, cur="ES3.SI", mainC, covC;
+
+const fmtD = e => new Date(e*1000).toISOString().slice(0,10);
+function futureDays(lastEpoch, n){
+  const out=[]; let e=lastEpoch;
+  while(out.length<n){ e+=86400; const d=new Date(e*1000).getUTCDay(); if(d>0&&d<6) out.push(e); }
+  return out;
+}
+function tradingDaysBetween(a,b){
+  let n=0; const d=new Date(a);
+  while(d<b){ d.setDate(d.getDate()+1); const w=d.getDay(); if(w>0&&w<6) n++; }
+  return n;
+}
+function flagsFor(r, hist){
+  const f=[];
+  if(r.status==="scored"){
+    if(!r.hit80) f.push("MISS80");
+    if(Math.abs(r.surprise)>2) f.push("SURPRISE");
+  }
+  const ws=hist.filter(h=>h.ticker===r.ticker && h.anchor_epoch<r.anchor_epoch)
+               .slice(-60).map(h=>h.relwidth1).sort((a,b)=>a-b);
+  if(ws.length>=10 && r.relwidth1 > 1.75*ws[Math.floor(ws.length/2)]) f.push("WIDE");
+  return f;
+}
+
+async function load(){
+  try{
+    const [jl, pr, co] = await Promise.all([
+      fetch(BASE+"kronos_daily_tracking.jsonl"+bust).then(r=>{if(!r.ok)throw r.status;return r.text();}),
+      fetch(BASE+"kronos_price_history.json"+bust).then(r=>r.json()),
+      fetch(BASE+"kronos_cal_offsets.json"+bust).then(r=>r.json())]);
+    recs = jl.trim().split("\n").map(l=>JSON.parse(l)).sort((a,b)=>a.anchor_epoch-b.anchor_epoch);
+    prices = pr; calOff = co;
+  }catch(e){
+    document.getElementById("err").style.display="block";
+    document.getElementById("err").textContent="Failed to load data feed: "+e;
+    return;
+  }
+  const latest = recs[recs.length-1];
+  const days = tradingDaysBetween(new Date(latest.date), new Date());
+  const p = document.getElementById("stale");
+  p.textContent = "data: " + latest.date;
+  if(days>2){ p.classList.add("stale"); p.textContent += " (stale — " + days + " trading days old)"; }
+  const tabs = document.getElementById("tabs");
+  TICKERS.forEach(t=>{
+    const b=document.createElement("div"); b.className="tab"+(t===cur?" on":""); b.textContent=t;
+    b.onclick=()=>{cur=t; document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
+                   b.classList.add("on"); drawMain();};
+    tabs.appendChild(b);
+  });
+  mainC = echarts.init(document.getElementById("main"));
+  covC = echarts.init(document.getElementById("cov"));
+  window.addEventListener("resize", ()=>{mainC.resize(); covC.resize();});
+  drawMain(); drawCov(); drawTable(); drawFlags();
+}
+
+function drawMain(){
+  const bars = (prices[cur]||{bars:[]}).bars;
+  const rec = [...recs].reverse().find(r=>r.ticker===cur);
+  if(!bars.length || !rec) return;
+  const q = (calOff[cur]||{}).offsets||[];
+  const H = rec.q10.length, a = rec.anchor_close;
+  const fut = futureDays(bars[bars.length-1][0], H);
+  const dates = bars.map(b=>fmtD(b[0])).concat(fut.map(fmtD));
+  const nH = bars.length;
+  const pad = v => Array(nH).fill(null).concat(v);
+  const calLo = rec.q10.map((v,i)=>+(v-(q[i]||0)*a).toFixed(4));
+  const calW  = rec.q90.map((v,i)=>+((v+(q[i]||0)*a)-calLo[i]).toFixed(4));
+  const rawW  = rec.q10.map((v,i)=>+(rec.q90[i]-v).toFixed(4));
+  document.getElementById("chartTitle").textContent =
+    cur+" — "+NAMES[cur]+" · close "+a.toFixed(3)+" · next-bar 80% ["+rec.cal_lo1+", "+rec.cal_up1+"] · "+rec.cal_source;
+  mainC.setOption({
+    animation:false, grid:{left:52,right:16,top:12,bottom:64},
+    tooltip:{trigger:"axis"},
+    xAxis:{type:"category", data:dates, boundaryGap:true},
+    yAxis:{type:"value", scale:true},
+    dataZoom:[{type:"inside"},{type:"slider",height:18,bottom:8}],
+    series:[
+      {name:"price", type:"candlestick", data:bars.map(b=>[b[1],b[4],b[3],b[2]]),
+       itemStyle:{color:"#059669",color0:"#dc2626",borderColor:"#059669",borderColor0:"#dc2626"}},
+      {name:"cal lo", type:"line", stack:"cal", data:pad(calLo), lineStyle:{opacity:0}, symbol:"none"},
+      {name:"calibrated 80%", type:"line", stack:"cal", data:pad(calW), lineStyle:{opacity:0},
+       symbol:"none", areaStyle:{color:"#2563eb", opacity:0.12}},
+      {name:"raw lo", type:"line", stack:"raw", data:pad(rec.q10), lineStyle:{opacity:0}, symbol:"none"},
+      {name:"raw 10–90%", type:"line", stack:"raw", data:pad(rawW), lineStyle:{opacity:0},
+       symbol:"none", areaStyle:{color:"#2563eb", opacity:0.22}},
+      {name:"median", type:"line", data:pad(rec.q50), symbol:"none",
+       lineStyle:{type:"dashed", color:"#2563eb", width:1.5}}
+    ]});
+}
+
+function drawCov(){
+  const scored = recs.filter(r=>r.status==="scored");
+  const byDate = {};
+  scored.forEach(r=>{ (byDate[r.realized_epoch] ||= []).push(r.hit80?1:0); });
+  const es = Object.keys(byDate).map(Number).sort((x,y)=>x-y);
+  const roll=[], win=[];
+  es.forEach(e=>{ win.push(...byDate[e]); while(win.length>120) win.shift();
+                  roll.push(+(win.reduce((s,v)=>s+v,0)/win.length).toFixed(3)); });
+  covC.setOption({
+    animation:false, grid:{left:52,right:16,top:12,bottom:28},
+    tooltip:{trigger:"axis"},
+    xAxis:{type:"category", data:es.map(fmtD)},
+    yAxis:{type:"value", min:0, max:1},
+    series:[{type:"line", data:roll, symbol:"circle", lineStyle:{color:"#2563eb"},
+      markLine:{silent:true, symbol:"none", lineStyle:{color:"#d97706", type:"dashed"},
+                data:[{yAxis:0.8}], label:{formatter:"target 0.80"}}}]});
+}
+
+function drawTable(){
+  const rows = TICKERS.map(t=>{
+    const hist = recs.filter(r=>r.ticker===t);
+    if(!hist.length) return "";
+    const c = hist[hist.length-1];
+    const sc = hist.filter(r=>r.status==="scored");
+    const last = sc[sc.length-1];
+    const cov = sc.length? (sc.slice(-60).filter(r=>r.hit80).length/Math.min(sc.length,60)).toFixed(2) : "—";
+    return "<tr><td>"+t+"</td><td>"+c.date+"</td><td>"+c.anchor_close.toFixed(3)+
+      "</td><td>["+c.cal_lo1+", "+c.cal_up1+"]</td><td class='"+(last?(last.hit80?"hit'>✓":"miss'>✗"):"'>—")+
+      "</td><td>"+(last?last.surprise:"—")+"</td><td>"+cov+"</td><td>"+c.cal_source+"</td></tr>";
+  }).join("");
+  document.getElementById("tbl").innerHTML =
+    "<table><tr><th>ticker</th><th>date</th><th>close</th><th>next-bar 80%</th><th>hit</th>"+
+    "<th>surprise</th><th>60d cov</th><th>calibration</th></tr>"+rows+"</table>";
+}
+
+function drawFlags(){
+  const out=[];
+  recs.filter(r=>r.status==="scored").slice(-60).reverse().forEach(r=>{
+    const f=flagsFor(r,recs);
+    if(f.length) out.push("<div style='margin:3px 0'>"+
+      f.map(x=>"<span class='flag'>"+x+"</span>").join("")+
+      r.ticker+" · "+fmtD(r.realized_epoch)+" · realized "+r.realized.toFixed(3)+
+      " vs ["+r.cal_lo1+", "+r.cal_up1+"] · surprise "+r.surprise+"</div>");
+  });
+  if(out.length) document.getElementById("flags").innerHTML = out.join("");
+}
+
+load();
+</script>
+</body>
+</html>
