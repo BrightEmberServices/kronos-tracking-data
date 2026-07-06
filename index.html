@@ -33,6 +33,13 @@
           background:var(--red); color:#fff; margin-right:4px; }
   .note { color:var(--mut); font-size:12px; margin-top:6px; }
   #err { color:var(--red); display:none; }
+  .datectl { display:flex; align-items:center; gap:10px; margin:2px 0 10px; }
+  .datectl input[type=range] { flex:1; accent-color:var(--blue); }
+  .datectl input[type=date] { font:12px inherit; background:var(--card); color:var(--fg);
+                               border:1px solid var(--line); border-radius:6px; padding:3px 6px; }
+  .minibtn { font-size:12px; padding:3px 10px; border:1px solid var(--line); border-radius:6px;
+             background:var(--card); color:var(--fg); cursor:pointer; }
+  .minibtn:hover { border-color:var(--blue); }
 </style>
 </head>
 <body>
@@ -41,9 +48,16 @@
 the underlying study found no directional edge. <span id="asof"></span></div>
 <p id="err"></p>
 <div class="tabs" id="tabs"></div>
-<div class="card"><h2 id="chartTitle">—</h2><div id="main"></div>
-  <div class="note">Solid: last 130 daily bars. Shaded: 48-step forecast — inner = raw ensemble 10–90%,
-  outer = CQR-calibrated 80% band. Dashed: ensemble median.</div></div>
+<div class="card"><h2 id="chartTitle">—</h2>
+  <div class="datectl">
+    <input type="range" id="dateRange" min="0" max="0" step="1" value="0">
+    <input type="date" id="dateInput">
+    <button type="button" id="dateLatest" class="minibtn">Latest</button>
+  </div>
+  <div id="main"></div>
+  <div class="note">Solid: real daily bars. Shaded: that day's 48-step forecast — inner = raw ensemble
+  10–90%, outer = CQR-calibrated 80% band. Dashed: ensemble median. Drag the slider or pick a date to
+  see an earlier day's forecast.</div></div>
 <div class="card"><h2>Rolling band coverage (target 0.80)</h2><div id="cov"></div>
   <div class="note">Share of scored next-bar forecasts landing inside the calibrated 80% band,
   trailing 20 scored days, pooled across tickers.</div></div>
@@ -70,7 +84,18 @@ async function fetchResilient(url, asText){
 }
 const NAMES = {"ES3.SI":"SPDR STI ETF","G3B.SI":"Amova STI ETF (Dist)","GAB.SI":"Amova STI ETF (Acc)",
                "D05.SI":"DBS Group","O39.SI":"OCBC","U11.SI":"UOB"};
-let recs=[], prices={}, calOff={}, cur="ES3.SI", mainC, covC;
+let recs=[], prices={}, calOff={}, cur="ES3.SI", selDate=null, mainC, covC;
+
+const availDates = t => recs.filter(r=>r.ticker===t).map(r=>r.date);
+
+function setupDateControls(){
+  const dates = availDates(cur);
+  selDate = dates[dates.length-1];
+  const range = document.getElementById("dateRange");
+  range.min = 0; range.max = Math.max(0, dates.length-1); range.value = dates.length-1;
+  const di = document.getElementById("dateInput");
+  di.min = dates[0]; di.max = dates[dates.length-1]; di.value = selDate;
+}
 
 const fmtD = e => new Date(e*1000).toISOString().slice(0,10);
 function futureDays(lastEpoch, n){
@@ -117,30 +142,50 @@ async function load(){
   TICKERS.forEach(t=>{
     const b=document.createElement("div"); b.className="tab"+(t===cur?" on":""); b.textContent=t;
     b.onclick=()=>{cur=t; document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
-                   b.classList.add("on"); drawMain();};
+                   b.classList.add("on"); setupDateControls(); drawMain();};
     tabs.appendChild(b);
   });
   mainC = echarts.init(document.getElementById("main"));
   covC = echarts.init(document.getElementById("cov"));
   window.addEventListener("resize", ()=>{mainC.resize(); covC.resize();});
+  document.getElementById("dateRange").addEventListener("input", e=>{
+    const dates = availDates(cur); selDate = dates[+e.target.value];
+    document.getElementById("dateInput").value = selDate; drawMain();
+  });
+  document.getElementById("dateInput").addEventListener("change", e=>{
+    const dates = availDates(cur);
+    let best = dates[0], bestDiff = Infinity;
+    dates.forEach(d=>{ const diff = Math.abs(new Date(d)-new Date(e.target.value));
+                        if(diff<bestDiff){ bestDiff=diff; best=d; } });
+    selDate = best;
+    document.getElementById("dateRange").value = dates.indexOf(selDate);
+    document.getElementById("dateInput").value = selDate; drawMain();
+  });
+  document.getElementById("dateLatest").addEventListener("click", ()=>{ setupDateControls(); drawMain(); });
+  setupDateControls();
   drawMain(); drawCov(); drawTable(); drawFlags();
 }
 
 function drawMain(){
   const bars = (prices[cur]||{bars:[]}).bars;
-  const rec = [...recs].reverse().find(r=>r.ticker===cur);
+  const rec = recs.find(r=>r.ticker===cur && r.date===selDate);
   if(!bars.length || !rec) return;
   const q = (calOff[cur]||{}).offsets||[];
   const H = rec.q10.length, a = rec.anchor_close;
-  const fut = futureDays(bars[bars.length-1][0], H);
+  let i0 = bars.findIndex(b=>b[0]===rec.anchor_epoch);
+  if(i0<0) i0 = bars.length-1;
+  const extra = Math.max(0, i0+1+H-bars.length);
+  const fut = extra>0 ? futureDays(bars[bars.length-1][0], extra) : [];
   const dates = bars.map(b=>fmtD(b[0])).concat(fut.map(fmtD));
-  const nH = bars.length;
-  const pad = v => Array(nH).fill(null).concat(v);
+  const totalLen = dates.length;
+  const pad = v => Array(i0+1).fill(null).concat(v)
+                    .concat(Array(Math.max(0, totalLen-(i0+1+v.length))).fill(null));
   const calLo = rec.q10.map((v,i)=>+(v-(q[i]||0)*a).toFixed(4));
   const calW  = rec.q90.map((v,i)=>+((v+(q[i]||0)*a)-calLo[i]).toFixed(4));
   const rawW  = rec.q10.map((v,i)=>+(rec.q90[i]-v).toFixed(4));
+  const statusTxt = rec.status==="scored" ? (rec.hit80?" · ✓ hit":" · ✗ miss") : " · pending";
   document.getElementById("chartTitle").textContent =
-    cur+" — "+NAMES[cur]+" · close "+a.toFixed(3)+" · next-bar 80% ["+rec.cal_lo1+", "+rec.cal_up1+"] · "+rec.cal_source;
+    cur+" — "+NAMES[cur]+" · "+rec.date+" · close "+a.toFixed(3)+" · next-bar 80% ["+rec.cal_lo1+", "+rec.cal_up1+"] · "+rec.cal_source+statusTxt;
   mainC.setOption({
     animation:false, grid:{left:52,right:16,top:12,bottom:64},
     tooltip:{trigger:"axis"},
