@@ -52,6 +52,7 @@ the underlying study found no directional edge. <span id="asof"></span></div>
 
 <script>
 const BASE = "https://cdn.jsdelivr.net/gh/BrightEmberServices/kronos-tracking-data@main/";
+const bust = "?v=" + new Date().toISOString().slice(0,13);
 const TICKERS = ["ES3.SI","G3B.SI","GAB.SI","D05.SI","O39.SI","U11.SI"];
 
 async function fetchResilient(url, asText){
@@ -97,9 +98,9 @@ function flagsFor(r, hist){
 async function load(){
   try{
     const [jl, pr, co] = await Promise.all([
-      fetchResilient(BASE+"kronos_daily_tracking.jsonl", true),
-      fetchResilient(BASE+"kronos_price_history.json", false),
-      fetchResilient(BASE+"kronos_cal_offsets.json", false)]);
+      fetchResilient(BASE+"kronos_daily_tracking.jsonl"+bust, true),
+      fetchResilient(BASE+"kronos_price_history.json"+bust, false),
+      fetchResilient(BASE+"kronos_cal_offsets.json"+bust, false)]);
     recs = jl.trim().split("\n").map(l=>JSON.parse(l)).sort((a,b)=>a.anchor_epoch-b.anchor_epoch);
     prices = pr; calOff = co;
   }catch(e){
