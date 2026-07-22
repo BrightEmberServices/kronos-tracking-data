@@ -4,28 +4,28 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kronos SGX Tracker</title>
+<meta name="description" content="Daily Kronos forecast bands and calibration tracking for six Singapore Exchange tickers.">
+<link rel="stylesheet" href="/brand.css?v=1">
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <style>
-  :root { --bg:#fff; --fg:#1e293b; --mut:#64748b; --line:#e2e8f0; --blue:#2563eb;
-          --red:#dc2626; --green:#059669; --amber:#d97706; --card:#f8fafc; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#0f172a; --fg:#e2e8f0; --mut:#94a3b8; --line:#334155; --card:#1e293b; }
-  }
-  body { font:14px -apple-system,system-ui,sans-serif; background:var(--bg); color:var(--fg);
-         max-width:1100px; margin:0 auto; padding:16px; }
-  h1 { font-size:19px; margin:4px 0 2px; }
-  .sub { color:var(--mut); font-size:12px; margin-bottom:12px; }
+  :root { --fg:var(--be-text); --mut:var(--be-muted); --line:var(--be-rule); --blue:var(--be-accent-deep);
+          --red:#b42318; --green:#067647; --amber:#b54708; --card:var(--be-surface); }
+  body { color:var(--fg); }
+  .dashboard-shell { width:min(1100px, calc(100% - 40px)); margin:0 auto; padding:36px 0 48px; min-width:0; }
+  .dashboard-title { max-width:none; font-size:clamp(2.4rem, 5vw, 4rem); margin:0 0 4px; line-height:1; }
+  .sub { color:var(--mut); font-size:14px; margin:10px 0 18px; }
   .pill { display:inline-block; padding:2px 10px; border-radius:10px; font-size:12px;
           background:var(--card); border:1px solid var(--line); }
   .pill.stale { background:var(--red); color:#fff; border-color:var(--red); }
   .tabs { display:flex; gap:6px; flex-wrap:wrap; margin:12px 0; }
   .tab { padding:6px 14px; border:1px solid var(--line); border-radius:8px; cursor:pointer;
-         background:var(--card); font-size:13px; }
+         background:var(--card); color:var(--fg); font:600 13px/1.4 var(--be-sans); }
   .tab.on { background:var(--blue); color:#fff; border-color:var(--blue); }
-  .card { border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:14px;
-          background:var(--bg); }
-  .card h2 { font-size:14px; margin:0 0 6px; }
-  #main { height:400px; } #cov { height:220px; }
+  .card { min-width:0; border:1px solid var(--be-border); border-radius:5px; padding:16px; margin-bottom:16px;
+          background:var(--be-bg); }
+  .card h2 { overflow-wrap:anywhere; font-family:var(--be-sans); font-size:15px; margin:0 0 8px; }
+  #main { width:100%; min-width:0; height:400px; } #cov { width:100%; min-width:0; height:220px; }
+  #tbl { max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }
   table { border-collapse:collapse; width:100%; font-size:12px; }
   td,th { border:1px solid var(--line); padding:5px 8px; text-align:left; }
   .miss { color:var(--red); font-weight:600; } .hit { color:var(--green); }
@@ -33,17 +33,34 @@
           background:var(--red); color:#fff; margin-right:4px; }
   .note { color:var(--mut); font-size:12px; margin-top:6px; }
   #err { color:var(--red); display:none; }
-  .datectl { display:flex; align-items:center; gap:10px; margin:2px 0 10px; }
-  .datectl input[type=range] { flex:1; accent-color:var(--blue); }
+  .datectl { display:flex; align-items:center; gap:10px; margin:2px 0 10px; min-width:0; }
+  .datectl input[type=range] { flex:1 1 auto; min-width:0; accent-color:var(--blue); }
   .datectl input[type=date] { font:12px inherit; background:var(--card); color:var(--fg);
                                border:1px solid var(--line); border-radius:6px; padding:3px 6px; }
   .minibtn { font-size:12px; padding:3px 10px; border:1px solid var(--line); border-radius:6px;
              background:var(--card); color:var(--fg); cursor:pointer; }
   .minibtn:hover { border-color:var(--blue); }
+  @media (max-width:680px) {
+    .dashboard-shell { width:calc(100% - 32px); padding:28px 0 36px; }
+    .dashboard-title { font-size:2.5rem; }
+    .datectl { flex-wrap:wrap; }
+    .datectl input[type=range] { flex-basis:100%; }
+    #main { height:360px; }
+  }
 </style>
 </head>
 <body>
-<h1>Kronos SGX Tracker <span id="stale" class="pill">loading…</span></h1>
+<header class="be-header">
+  <div class="be-header__inner">
+    <a class="be-logo" href="https://brightember.co" aria-label="BrightEmber home">
+      <img src="/brightember-logo.svg" alt="BrightEmber" width="162" height="38">
+    </a>
+    <a class="be-header__label" href="/">Apps</a>
+  </div>
+</header>
+<main class="dashboard-shell">
+<p class="be-kicker">Market model diagnostics</p>
+<h1 class="dashboard-title">Kronos SGX Tracker <span id="stale" class="pill">loading…</span></h1>
 <div class="sub">Mini-tier forecasts with conformal-calibrated 80% bands · calibrated range, not direction —
 the underlying study found no directional edge. <span id="asof"></span></div>
 <p id="err"></p>
@@ -54,15 +71,17 @@ the underlying study found no directional edge. <span id="asof"></span></div>
     <input type="date" id="dateInput">
     <button type="button" id="dateLatest" class="minibtn">Latest</button>
   </div>
-  <div id="main"></div>
+  <div id="main" role="img" aria-label="Price history and forecast-band chart"></div>
   <div class="note">Solid: real daily bars. Shaded: that day's 48-step forecast — inner = raw ensemble
   10–90%, outer = CQR-calibrated 80% band. Dashed: ensemble median. Drag the slider or pick a date to
   see an earlier day's forecast.</div></div>
-<div class="card"><h2>Rolling band coverage (target 0.80)</h2><div id="cov"></div>
+<div class="card"><h2>Rolling band coverage (target 0.80)</h2><div id="cov" role="img" aria-label="Rolling forecast-band coverage chart"></div>
   <div class="note">Share of scored next-bar forecasts landing inside the calibrated 80% band,
   trailing 20 scored days, pooled across tickers.</div></div>
-<div class="card"><h2>Latest scores</h2><div id="tbl"></div></div>
+<div class="card"><h2>Latest scores</h2><div id="tbl" role="region" aria-label="Latest scores table" tabindex="0"></div></div>
 <div class="card"><h2>Recent flags</h2><div id="flags"><span class="note">none yet</span></div></div>
+</main>
+<footer class="be-footer">BrightEmber Services &amp; Trading Pte. Ltd. · Singapore</footer>
 
 <script>
 const BASE = "https://cdn.jsdelivr.net/gh/BrightEmberServices/kronos-tracking-data@main/";
@@ -140,7 +159,7 @@ async function load(){
   if(days>2){ p.classList.add("stale"); p.textContent += " (stale — " + days + " trading days old)"; }
   const tabs = document.getElementById("tabs");
   TICKERS.forEach(t=>{
-    const b=document.createElement("div"); b.className="tab"+(t===cur?" on":""); b.textContent=t;
+    const b=document.createElement("button"); b.type="button"; b.className="tab"+(t===cur?" on":""); b.textContent=t;
     b.onclick=()=>{cur=t; document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
                    b.classList.add("on"); setupDateControls(); drawMain();};
     tabs.appendChild(b);
@@ -197,12 +216,12 @@ function drawMain(){
        itemStyle:{color:"#059669",color0:"#dc2626",borderColor:"#059669",borderColor0:"#dc2626"}},
       {name:"cal lo", type:"line", stack:"cal", data:pad(calLo), lineStyle:{opacity:0}, symbol:"none"},
       {name:"calibrated 80%", type:"line", stack:"cal", data:pad(calW), lineStyle:{opacity:0},
-       symbol:"none", areaStyle:{color:"#2563eb", opacity:0.12}},
+       symbol:"none", areaStyle:{color:"#d6510f", opacity:0.12}},
       {name:"raw lo", type:"line", stack:"raw", data:pad(rec.q10), lineStyle:{opacity:0}, symbol:"none"},
       {name:"raw 10–90%", type:"line", stack:"raw", data:pad(rawW), lineStyle:{opacity:0},
-       symbol:"none", areaStyle:{color:"#2563eb", opacity:0.22}},
+       symbol:"none", areaStyle:{color:"#d6510f", opacity:0.22}},
       {name:"median", type:"line", data:pad(rec.q50), symbol:"none",
-       lineStyle:{type:"dashed", color:"#2563eb", width:1.5}}
+       lineStyle:{type:"dashed", color:"#d6510f", width:1.5}}
     ]});
 }
 
@@ -219,7 +238,7 @@ function drawCov(){
     tooltip:{trigger:"axis"},
     xAxis:{type:"category", data:es.map(fmtD)},
     yAxis:{type:"value", min:0, max:1},
-    series:[{type:"line", data:roll, symbol:"circle", lineStyle:{color:"#2563eb"},
+    series:[{type:"line", data:roll, symbol:"circle", lineStyle:{color:"#d6510f"},
       markLine:{silent:true, symbol:"none", lineStyle:{color:"#d97706", type:"dashed"},
                 data:[{yAxis:0.8}], label:{formatter:"target 0.80"}}}]});
 }
